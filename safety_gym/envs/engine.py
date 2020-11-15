@@ -46,8 +46,8 @@ GROUP_CIRCLE = 6
 ORIGIN_COORDINATES = np.zeros(3)
 
 # Constant defaults for rendering frames for humans (not used for vision)
-DEFAULT_WIDTH = 256
-DEFAULT_HEIGHT = 256
+DEFAULT_WIDTH = 256*2
+DEFAULT_HEIGHT = 256*2
 
 class ResamplingError(AssertionError):
     ''' Raised when we fail to sample a valid distribution of objects or goals '''
@@ -101,6 +101,9 @@ class Engine(gym.Env, gym.utils.EzPickle):
 
         'placements_extents': [-2, -2, 2, 2],  # Placement limits (min X, min Y, max X, max Y)
         'placements_margin': 0.0,  # Additional margin added to keepout when placing objects
+
+        'camera_type': 'fixedoverhead',
+        'overlay_reward_cost': True,
 
         # Floor
         'floor_display_mode': False,  # In display mode, the visible part of the floor is cropped
@@ -200,6 +203,8 @@ class Engine(gym.Env, gym.utils.EzPickle):
         'reward_z': 1.0,  # Reward for standup tests (vel in z direction)
         'reward_circle': 1e-1,  # Reward for circle goal (complicated formula depending on pos and vel)
         'reward_clip': 10,  # Clip reward, last resort against physics errors causing magnitude spikes
+        'reward_absolute_distance': True,
+        'reward_includes_cost': False,
 
         # Buttons are small immovable spheres, to the environment
         'buttons_num': 0,  # Number of buttons to add
@@ -1267,9 +1272,13 @@ class Engine(gym.Env, gym.utils.EzPickle):
 
             # Reward processing
             reward = self.reward()
+            cost = self.cost()
+
+            if self.reward_includes_cost:
+                reward = reward - cost['cost']
 
             # Constraint violations
-            info.update(self.cost())
+            info.update(cost)
 
             # Button timer (used to delay button resampling)
             self.buttons_timer_tick()
@@ -1295,6 +1304,8 @@ class Engine(gym.Env, gym.utils.EzPickle):
                         self.build_goal()
                 else:
                     self.done = True
+            else:
+                info['goal_met'] = False
 
         # Timeout
         self.steps += 1
@@ -1309,7 +1320,12 @@ class Engine(gym.Env, gym.utils.EzPickle):
         # Distance from robot to goal
         if self.task in ['goal', 'button']:
             dist_goal = self.dist_goal()
-            reward += (self.last_dist_goal - dist_goal) * self.reward_distance
+            if self.reward_absolute_distance:
+                reward += -dist_goal * self.reward_distance
+            else:
+                reward += (
+                    (self.last_dist_goal - dist_goal) * self.reward_distance
+                )
             self.last_dist_goal = dist_goal
         # Distance from robot to box
         if self.task == 'push':
@@ -1413,10 +1429,13 @@ class Engine(gym.Env, gym.utils.EzPickle):
             self.viewer.draw_pixels(self.save_obs_vision, 0, 0)
 
     def render(self,
-               mode='human', 
+               mode='human',
                camera_id=None,
                width=DEFAULT_WIDTH,
-               height=DEFAULT_HEIGHT
+               height=DEFAULT_HEIGHT,
+               overlay_bl=None,
+               overlay_tr=None,
+               overlay_tl=None,
                ):
         ''' Render the environment to the screen '''
 
@@ -1428,8 +1447,8 @@ class Engine(gym.Env, gym.utils.EzPickle):
                 self.viewer.cam.type = const.CAMERA_FREE
             else:
                 self.viewer = MjRenderContextOffscreen(self.sim)
-                self.viewer._hide_overlay = True
-                self.viewer.cam.fixedcamid = camera_id #self.model.camera_name2id(mode)
+                # self.viewer._hide_overlay = True
+                self.viewer.cam.fixedcamid = self.model.camera_name2id(self.camera_type)
                 self.viewer.cam.type = const.CAMERA_FIXED
             self.viewer.render_swap_callback = self.render_swap_callback
             # Turn all the geom groups on
@@ -1493,6 +1512,36 @@ class Engine(gym.Env, gym.utils.EzPickle):
             vision = Image.fromarray(vision).resize(self.vision_render_size)
             vision = np.array(vision, dtype='uint8')
             self.save_obs_vision = vision
+
+        if self.overlay_reward_cost:
+            reward = self.reward()
+            cost = self.cost()['cost']
+            self.viewer.add_overlay(const.GRID_BOTTOMRIGHT,
+                                    "R: {:.2f}".format(reward),
+                                    "C: {:.2f}".format(cost),
+                                    )
+
+        if overlay_bl is not None:
+            self.viewer.add_overlay(
+                const.GRID_BOTTOMLEFT,
+                overlay_bl,
+                ""
+            )
+
+        if overlay_tl is not None:
+            self.viewer.add_overlay(
+                const.GRID_TOPLEFT,
+                overlay_tl,
+                ""
+            )
+
+        if overlay_tr is not None:
+            self.viewer.add_overlay(
+                const.GRID_TOPRIGHT,
+                overlay_tr,
+                ""
+            )
+
 
         if mode=='human':
             self.viewer.render()
